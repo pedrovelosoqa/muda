@@ -8,7 +8,7 @@
       this.textureKey = config.textureKey || "muda_final";
       this.enablePhysics = config.enablePhysics !== false;
       this.depth = config.depth || 30;
-      this.trailLength = config.trailLength || 36;
+      this.trailLength = config.trailLength || 26;
       this.scaleFactor = 1;
       this.velocityHint = 0;
       this.invincibilityTween = null;
@@ -123,21 +123,11 @@
     }
 
     setPosition(x, y) {
-      const previousX = this.x;
-      const previousY = this.y;
-
       if (this.bodySprite) {
         this.bodySprite.setPosition(x, y);
       }
 
       this.root.setPosition(x, y);
-
-      if (
-        Math.abs(previousX - x) > Math.max(24, this.displayWidth * 0.45) ||
-        Math.abs(previousY - y) > Math.max(24, this.displayHeight * 0.45)
-      ) {
-        this.clearTrailHistory();
-      }
     }
 
     setVelocityY(value) {
@@ -215,21 +205,6 @@
       };
     }
 
-    clearTrailHistory() {
-      this.trailHistory.length = 0;
-    }
-
-    getSmoothedTrailPoint(index) {
-      const current = this.trailHistory[index];
-      const previous = this.trailHistory[Math.max(0, index - 1)] || current;
-      const next = this.trailHistory[Math.min(this.trailHistory.length - 1, index + 1)] || current;
-
-      return {
-        x: (previous.x + current.x + next.x) / 3,
-        y: (previous.y + (current.y * 2) + next.y) / 4
-      };
-    }
-
     drawRainbowTrail(time) {
       this.rainbowGraphics.clear();
 
@@ -240,33 +215,18 @@
         this.trailHistory.length = this.trailLength;
       }
 
-      const segmentWidth = Math.max(14, Math.round(this.displayWidth * 0.2));
-      const segmentSpacing = Math.max(4, Math.round(segmentWidth * 0.36));
-      const stripeHeight = Math.max(4, Math.round(this.displayHeight * 0.075));
-      const stripeSpacing = Math.max(4, stripeHeight - 1);
-      const tailInset = Math.round(segmentWidth * 0.34);
-      const waveAmplitude = Math.max(1.4, this.displayHeight * 0.022);
-      const lastIndex = Math.max(1, this.trailHistory.length - 1);
-
       for (let stripe = 0; stripe < TRAIL_COLORS.length; stripe += 1) {
-        const stripeOffset = (stripe - ((TRAIL_COLORS.length - 1) * 0.5)) * stripeSpacing;
+        this.rainbowGraphics.fillStyle(TRAIL_COLORS[stripe], 1);
 
-        for (let index = this.trailHistory.length - 1; index >= 0; index -= 1) {
-          const point = this.getSmoothedTrailPoint(index);
-          const ageFactor = index / lastIndex;
-          const wave = Math.sin((index * 0.34) + (time * 0.0052)) * waveAmplitude;
-          const width = Math.max(segmentWidth * 0.8, segmentWidth - (ageFactor * 2));
-          const height = Math.max(stripeHeight * 0.9, stripeHeight - (ageFactor * 0.45));
-          const x = point.x - tailInset - (index * segmentSpacing);
-          const y = point.y + stripeOffset + wave;
+        for (let index = 0; index < this.trailHistory.length; index += 1) {
+          const point = this.trailHistory[index];
+          const wave = Math.sin((index * 0.42) + (time * 0.006)) * 2.2;
+          const width = Math.max(10, 18 - Math.floor(index * 0.22));
+          const height = 6;
+          const x = point.x - width + 2;
+          const y = point.y + ((stripe - 2.5) * 4.5) + wave;
 
-          this.rainbowGraphics.fillStyle(TRAIL_COLORS[stripe], 0.98 - (ageFactor * 0.18));
-          this.rainbowGraphics.fillRect(
-            Math.round(x),
-            Math.round(y - (height * 0.5)),
-            Math.max(1, Math.round(width)),
-            Math.max(1, Math.round(height))
-          );
+          this.rainbowGraphics.fillRect(x, y, width, height);
         }
       }
     }
