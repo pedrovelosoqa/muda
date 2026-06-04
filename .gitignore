@@ -1,0 +1,5 @@
+Thumbs.db
+.DS_Store
+.codex_server_out.log
+.codex_server_err.log
+tmp_*.png

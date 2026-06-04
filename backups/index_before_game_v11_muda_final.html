@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Muda</title>
+  <!--
+    Teste local:
+    Abrir este arquivo diretamente funciona para a estrutura base, mas alguns navegadores
+    bloqueiam PNGs e áudios via file:// por política de CORS do Phaser.
+    Para testar todos os assets locais com segurança, rode esta pasta com Live Server.
+
+    Rollback:
+    As versoes anteriores e componentes antigos foram organizados em ./backups/.
+    A iteracao visual ativa agora usa game_v10_gatinha_pura.js com MudaPlayer_v2.js na raiz.
+  -->
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="game-root" aria-label="Jogo Muda"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <script src="./MudaPlayer_v2.js"></script>
+  <script src="./game_v10_gatinha_pura.js"></script>
+</body>
+</html>
