@@ -18,6 +18,12 @@
   const POWERUP_SPAWN_MARKERS = [0.22, 0.55, 0.82];
   const LOCAL_STORAGE_KEY = "muda-best-score";
   const FIXED_PIPE_GAP = 252;
+  const STARTING_LIVES = 7;
+  const MAX_LIVES = 7;
+  const HUD_ROOT_X = 16;
+  const HUD_ROOT_Y = 14;
+  const LIFE_ICONS_FIRST_ROW = 4;
+  const LIFE_PANEL_RIGHT_MARGIN = 18;
   const PHASES = Array.from({ length: TOTAL_PHASES }, (_, index) => {
     const phaseNumber = index + 1;
     const speedFactor = Number(Math.pow(1.11, index).toFixed(4));
@@ -504,7 +510,7 @@
       this.scoreIcon = scene.add.image(0, 0, "power-treat").setOrigin(0, 0.5);
       this.scoreText = this.createText("", 18, "#ffffff", "bold");
       this.audioText = this.createText("", 14, "#dbeafe");
-      this.lifeTitle = this.createText("Tolerancia", 16, "#ffffff", "bold");
+      this.lifeTitle = this.createText("Vidas", 16, "#ffffff", "bold");
       this.lifeIcons = [];
 
       this.root.add([
@@ -528,8 +534,36 @@
       return text;
     }
 
+    getLivesLayout(width) {
+      const compact = width <= 420;
+      const iconWidth = compact ? 22 : 24;
+      const iconHeight = compact ? 15 : 16;
+      const columnGap = compact ? 2 : 3;
+      const rowGap = compact ? 20 : 22;
+      const firstRowCapacity = Math.min(LIFE_ICONS_FIRST_ROW, MAX_LIVES);
+      const secondRowCapacity = Math.max(0, MAX_LIVES - firstRowCapacity);
+      const firstRowWidth = (firstRowCapacity * iconWidth) + (Math.max(0, firstRowCapacity - 1) * columnGap);
+      const secondRowWidth = secondRowCapacity > 0
+        ? (secondRowCapacity * iconWidth) + ((secondRowCapacity - 1) * columnGap)
+        : 0;
+      const panelWidth = Math.max(this.lifeTitle.width, firstRowWidth, secondRowWidth);
+      const availableWidth = Math.max(0, width - HUD_ROOT_X);
+      const panelLeft = Math.max(0, availableWidth - LIFE_PANEL_RIGHT_MARGIN - panelWidth);
+
+      return {
+        iconWidth,
+        iconHeight,
+        columnGap,
+        panelWidth,
+        panelLeft,
+        titleX: panelLeft + ((panelWidth - this.lifeTitle.width) * 0.5),
+        firstRowY: 34,
+        secondRowY: 34 + rowGap
+      };
+    }
+
     layout(bounds) {
-      this.root.setPosition(16, 14);
+      this.root.setPosition(HUD_ROOT_X, HUD_ROOT_Y);
       this.phaseText.setPosition(0, 0);
       this.timeText.setPosition(0, 28);
       this.scoreIcon.setPosition(0, 62);
@@ -537,30 +571,35 @@
       this.scoreText.setPosition(34, 50);
       this.audioText.setPosition(0, 82);
 
-      const rightX = Math.max(220, bounds.width - 160);
-      this.lifeTitle.setPosition(rightX, 0);
-      this.reflowLives(0, bounds.width);
+      const lifeLayout = this.getLivesLayout(bounds.width);
+      this.lifeTitle.setPosition(lifeLayout.titleX, 0);
+      this.reflowLives(this.lastLivesCount > -1 ? this.lastLivesCount : 0, bounds.width);
     }
 
     reflowLives(count, width) {
       this.lifeIcons.forEach((icon) => icon.destroy());
       this.lifeIcons = [];
 
-      const rightX = Math.max(220, width - 160);
-      const maxIcons = Math.min(count, 6);
+      const lifeLayout = this.getLivesLayout(width);
+      const maxIcons = Math.min(count, MAX_LIVES);
+      const firstRowCount = Math.min(maxIcons, LIFE_ICONS_FIRST_ROW);
+      const secondRowCount = Math.max(0, maxIcons - LIFE_ICONS_FIRST_ROW);
+
+      this.lifeTitle.setPosition(lifeLayout.titleX, 0);
 
       for (let index = 0; index < maxIcons; index += 1) {
-        const icon = this.scene.add.image(rightX + (index * 24), 34, PLAYER_TEXTURE_KEY).setOrigin(0, 0.5);
-        icon.setDisplaySize(24, 16);
+        const isSecondRow = index >= LIFE_ICONS_FIRST_ROW;
+        const rowIndex = isSecondRow ? 1 : 0;
+        const indexInRow = isSecondRow ? index - LIFE_ICONS_FIRST_ROW : index;
+        const rowCount = rowIndex === 0 ? firstRowCount : secondRowCount;
+        const rowWidth = (rowCount * lifeLayout.iconWidth) + (Math.max(0, rowCount - 1) * lifeLayout.columnGap);
+        const rowLeft = lifeLayout.panelLeft + ((lifeLayout.panelWidth - rowWidth) * 0.5);
+        const x = rowLeft + (lifeLayout.iconWidth * 0.5) + (indexInRow * (lifeLayout.iconWidth + lifeLayout.columnGap));
+        const y = rowIndex === 0 ? lifeLayout.firstRowY : lifeLayout.secondRowY;
+        const icon = this.scene.add.image(x, y, PLAYER_TEXTURE_KEY).setOrigin(0.5);
+        icon.setDisplaySize(lifeLayout.iconWidth, lifeLayout.iconHeight);
         this.lifeIcons.push(icon);
         this.root.add(icon);
-      }
-
-      if (count > maxIcons) {
-        const extra = this.createText(`+${count - maxIcons}`, 14, "#ffffff", "bold");
-        extra.setPosition(rightX + (maxIcons * 24) + 2, 24);
-        this.lifeIcons.push(extra);
-        this.root.add(extra);
       }
     }
 
@@ -953,7 +992,7 @@
     }
 
     startGame() {
-      this.scene.start("GameScene", { phaseIndex: 0, score: 0, lives: 3, extraLives: 3 });
+      this.scene.start("GameScene", { phaseIndex: 0, score: 0, lives: STARTING_LIVES, extraLives: STARTING_LIVES });
     }
 
     handleResize(gameSize) {
@@ -1013,9 +1052,10 @@
     init(data) {
       this.phaseIndex = data.phaseIndex || 0;
       this.score = data.score || 0;
-      this.lives = typeof data.lives === "number"
+      const initialLives = typeof data.lives === "number"
         ? data.lives
-        : (typeof data.extraLives === "number" ? data.extraLives : 3);
+        : (typeof data.extraLives === "number" ? data.extraLives : STARTING_LIVES);
+      this.lives = Phaser.Math.Clamp(initialLives, 0, MAX_LIVES);
       this.extraLives = this.lives;
     }
 
@@ -1374,8 +1414,6 @@
       }
 
       powerUp.destroy();
-      this.lives += 1;
-      this.extraLives = this.lives;
       this.powerUpsCollectedThisPhase += 1;
       this.score += 3;
 

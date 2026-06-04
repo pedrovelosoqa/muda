@@ -35,11 +35,11 @@ O projeto atual usa:
 
 ## Vidas, dano e power-ups
 
-- A partida inicia com `3` vidas.
+- A partida inicia com `7` vidas.
 - Ao sofrer dano, o jogador perde `1` vida.
 - Depois de tomar dano, existe um curto periodo de invencibilidade visual para evitar hits em sequencia.
 - Cada fase tenta gerar ate `3` power-ups.
-- Coletar um power-up adiciona `+1` vida e tambem aumenta a pontuacao.
+- Coletar um power-up aumenta a pontuacao, mas nao recupera vidas.
 
 ## Identidade visual da versao atual
 
