@@ -13,20 +13,31 @@
 (() => {
   const GAME_VERSION = "v11_muda_final";
   const PLAYER_TEXTURE_KEY = "muda_final";
+  const EXTRA_LIFE_TEXTURE_KEY = "extra-life-treat";
+  const RAT_TEXTURE_KEY = "rat-enemy";
+  const RAT_RUNTIME_TEXTURE_KEY = "rat-enemy-runtime";
+  const RAT_FALLBACK_TEXTURE_KEY = "rat-enemy-fallback";
   const INVINCIBILITY_DURATION = 3000;
   const TOTAL_PHASES = 7;
+  const RAT_PHASE_START = 2;
+  const RAT_PHASE_END = 4;
+  const MAX_RATS_PER_PHASE = 2;
   const POWERUP_SPAWN_MARKERS = [0.22, 0.55, 0.82];
+  const EXTRA_LIFE_SPAWN_MARKER_MIN = 0.2;
+  const EXTRA_LIFE_SPAWN_MARKER_MAX = 0.78;
   const LOCAL_STORAGE_KEY = "muda-best-score";
   const FIXED_PIPE_GAP = 252;
   const STARTING_LIVES = 7;
-  const MAX_LIVES = 7;
+  const MAX_LIVES = STARTING_LIVES + TOTAL_PHASES;
   const HUD_ROOT_X = 16;
   const HUD_ROOT_Y = 14;
-  const LIFE_ICONS_FIRST_ROW = 4;
+  const LIFE_ICONS_PER_ROW = 7;
+  const LIFE_ICONS_PER_ROW_COMPACT = 5;
   const LIFE_PANEL_RIGHT_MARGIN = 18;
+  const EXTRA_LIFE_TEXTURE_FALLBACK_ASPECT = 442 / 626;
   const PHASES = Array.from({ length: TOTAL_PHASES }, (_, index) => {
     const phaseNumber = index + 1;
-    const speedFactor = Number(Math.pow(1.11, index).toFixed(4));
+    const speedFactor = Number(Math.pow(1.15, index).toFixed(4));
 
     return {
       number: phaseNumber,
@@ -111,6 +122,14 @@
       floorHeight: Math.max(96, Math.round(height * 0.15)),
       playerStartX: Math.round(width * 0.24)
     };
+  }
+
+  function safeResumeAudioContext(audioContext) {
+    if (!audioContext || audioContext.state !== "suspended" || typeof audioContext.resume !== "function") {
+      return;
+    }
+
+    audioContext.resume().catch(() => {});
   }
 
   class AssetBuilder {
@@ -483,6 +502,212 @@
       this.createUrbanStripTextures(scene);
     }
 
+    static createCleanRatTexture(scene) {
+      if (!scene.textures.exists(RAT_TEXTURE_KEY) || scene.textures.exists(RAT_RUNTIME_TEXTURE_KEY)) {
+        return false;
+      }
+
+      if (!window.document || (window.location && window.location.protocol === "file:")) {
+        return false;
+      }
+
+      try {
+        const sourceTexture = scene.textures.get(RAT_TEXTURE_KEY);
+        const sourceImage = sourceTexture && sourceTexture.getSourceImage ? sourceTexture.getSourceImage() : null;
+        if (!sourceImage || !sourceImage.width || !sourceImage.height) {
+          return false;
+        }
+
+        const workingCanvas = window.document.createElement("canvas");
+        workingCanvas.width = sourceImage.width;
+        workingCanvas.height = sourceImage.height;
+
+        const workingContext = workingCanvas.getContext("2d");
+        if (!workingContext) {
+          return false;
+        }
+
+        workingContext.clearRect(0, 0, workingCanvas.width, workingCanvas.height);
+        workingContext.drawImage(sourceImage, 0, 0);
+
+        const imageData = workingContext.getImageData(0, 0, workingCanvas.width, workingCanvas.height);
+        const { data, width, height } = imageData;
+        const quantizeStep = 12;
+        const paletteBins = new Map();
+        const sampleInset = Math.max(1, Math.round(Math.min(width, height) * 0.018));
+        const sampleStep = Math.max(3, Math.round(Math.min(width, height) / 160));
+
+        const quantizeChannel = (value) => Math.max(0, Math.min(255, Math.round(value / quantizeStep) * quantizeStep));
+        const collectBorderColor = (x, y) => {
+          const index = ((y * width) + x) * 4;
+          if (data[index + 3] < 12) {
+            return;
+          }
+
+          const key = [
+            quantizeChannel(data[index]),
+            quantizeChannel(data[index + 1]),
+            quantizeChannel(data[index + 2])
+          ].join(",");
+
+          paletteBins.set(key, (paletteBins.get(key) || 0) + 1);
+        };
+
+        for (let x = 0; x < width; x += sampleStep) {
+          collectBorderColor(x, sampleInset);
+          collectBorderColor(x, Math.max(0, height - 1 - sampleInset));
+        }
+
+        for (let y = 0; y < height; y += sampleStep) {
+          collectBorderColor(sampleInset, y);
+          collectBorderColor(Math.max(0, width - 1 - sampleInset), y);
+        }
+
+        const palette = [...paletteBins.entries()]
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 24)
+          .map(([key]) => key.split(",").map(Number));
+
+        if (palette.length === 0) {
+          return false;
+        }
+
+        const transparentDistanceSq = 28 * 28;
+        const featherDistanceSq = 62 * 62;
+        let minX = width;
+        let minY = height;
+        let maxX = -1;
+        let maxY = -1;
+
+        for (let y = 0; y < height; y += 1) {
+          for (let x = 0; x < width; x += 1) {
+            const index = ((y * width) + x) * 4;
+            const alpha = data[index + 3];
+            if (alpha < 12) {
+              continue;
+            }
+
+            const red = data[index];
+            const green = data[index + 1];
+            const blue = data[index + 2];
+            let nearestDistanceSq = Number.POSITIVE_INFINITY;
+
+            for (let paletteIndex = 0; paletteIndex < palette.length; paletteIndex += 1) {
+              const [sampleRed, sampleGreen, sampleBlue] = palette[paletteIndex];
+              const distanceSq =
+                ((red - sampleRed) * (red - sampleRed)) +
+                ((green - sampleGreen) * (green - sampleGreen)) +
+                ((blue - sampleBlue) * (blue - sampleBlue));
+
+              if (distanceSq < nearestDistanceSq) {
+                nearestDistanceSq = distanceSq;
+              }
+            }
+
+            if (nearestDistanceSq <= transparentDistanceSq) {
+              data[index + 3] = 0;
+              continue;
+            }
+
+            if (nearestDistanceSq < featherDistanceSq) {
+              const alphaFactor = (nearestDistanceSq - transparentDistanceSq) / (featherDistanceSq - transparentDistanceSq);
+              data[index + 3] = Math.min(alpha, Math.round(255 * alphaFactor));
+            }
+
+            if (data[index + 3] > 16) {
+              minX = Math.min(minX, x);
+              minY = Math.min(minY, y);
+              maxX = Math.max(maxX, x);
+              maxY = Math.max(maxY, y);
+            }
+          }
+        }
+
+        if (maxX < minX || maxY < minY) {
+          return false;
+        }
+
+        workingContext.putImageData(imageData, 0, 0);
+
+        const padding = 8;
+        const cropX = Math.max(0, minX - padding);
+        const cropY = Math.max(0, minY - padding);
+        const cropWidth = Math.min(width - cropX, (maxX - minX + 1) + (padding * 2));
+        const cropHeight = Math.min(height - cropY, (maxY - minY + 1) + (padding * 2));
+        const canvasTexture = scene.textures.createCanvas(RAT_RUNTIME_TEXTURE_KEY, cropWidth, cropHeight);
+        const canvasContext = canvasTexture.context;
+
+        canvasContext.clearRect(0, 0, cropWidth, cropHeight);
+        canvasContext.drawImage(
+          workingCanvas,
+          cropX,
+          cropY,
+          cropWidth,
+          cropHeight,
+          0,
+          0,
+          cropWidth,
+          cropHeight
+        );
+        canvasTexture.refresh();
+        return true;
+      } catch (error) {
+        console.warn("Nao foi possivel preparar a textura limpa do rato.", error);
+        return false;
+      }
+    }
+
+    static createRatFallbackTexture(scene) {
+      try {
+        this.generateCanvasTexture(scene, RAT_FALLBACK_TEXTURE_KEY, 132, 84, (context) => {
+          const fillTriangle = (x1, y1, x2, y2, x3, y3) => {
+            context.beginPath();
+            context.moveTo(x1, y1);
+            context.lineTo(x2, y2);
+            context.lineTo(x3, y3);
+            context.closePath();
+            context.fill();
+          };
+
+          context.fillStyle = "#3b3d42";
+          context.beginPath();
+          context.ellipse(62, 46, 33, 17, 0, 0, Math.PI * 2);
+          context.fill();
+
+          context.beginPath();
+          context.ellipse(92, 38, 14, 12, 0, 0, Math.PI * 2);
+          context.fill();
+
+          fillTriangle(85, 28, 92, 12, 96, 30);
+          fillTriangle(96, 30, 106, 14, 108, 33);
+
+          context.fillStyle = "#5a5f67";
+          context.beginPath();
+          context.ellipse(54, 42, 14, 8, 0, 0, Math.PI * 2);
+          context.fill();
+
+          context.fillStyle = "#1f2125";
+          context.fillRect(44, 58, 7, 18);
+          context.fillRect(66, 58, 7, 18);
+          context.fillRect(90, 58, 7, 16);
+
+          context.beginPath();
+          context.arc(100, 36, 2, 0, Math.PI * 2);
+          context.fill();
+
+          context.strokeStyle = "#2d2f34";
+          context.lineWidth = 5;
+          context.lineCap = "round";
+          context.beginPath();
+          context.moveTo(28, 44);
+          context.quadraticCurveTo(10, 24, 8, 54);
+          context.stroke();
+        });
+      } catch (error) {
+        console.warn("Nao foi possivel preparar a textura fallback do rato.", error);
+      }
+    }
+
     static ensureRuntimeTextures(scene) {
       if (scene.textures.exists("ui-source")) {
         this.cropTexture(scene, "ui-source", "hud-cat-icon", CROPS.hudCat);
@@ -495,6 +720,8 @@
       }
 
       this.createFallbackTextures(scene);
+      this.createCleanRatTexture(scene);
+      this.createRatFallbackTexture(scene);
     }
   }
 
@@ -540,25 +767,28 @@
       const iconHeight = compact ? 15 : 16;
       const columnGap = compact ? 2 : 3;
       const rowGap = compact ? 20 : 22;
-      const firstRowCapacity = Math.min(LIFE_ICONS_FIRST_ROW, MAX_LIVES);
-      const secondRowCapacity = Math.max(0, MAX_LIVES - firstRowCapacity);
-      const firstRowWidth = (firstRowCapacity * iconWidth) + (Math.max(0, firstRowCapacity - 1) * columnGap);
-      const secondRowWidth = secondRowCapacity > 0
-        ? (secondRowCapacity * iconWidth) + ((secondRowCapacity - 1) * columnGap)
-        : 0;
-      const panelWidth = Math.max(this.lifeTitle.width, firstRowWidth, secondRowWidth);
+      const iconsPerRow = compact ? LIFE_ICONS_PER_ROW_COMPACT : LIFE_ICONS_PER_ROW;
+      const count = Math.max(0, this.lastLivesCount);
+      const rowCount = Math.max(1, Math.ceil(Math.max(1, count) / iconsPerRow));
+      const widestRowCount = Math.min(Math.max(1, count), iconsPerRow);
+      const widestRowWidth = (widestRowCount * iconWidth) + (Math.max(0, widestRowCount - 1) * columnGap);
+      const panelWidth = Math.max(this.lifeTitle.width, widestRowWidth);
       const availableWidth = Math.max(0, width - HUD_ROOT_X);
       const panelLeft = Math.max(0, availableWidth - LIFE_PANEL_RIGHT_MARGIN - panelWidth);
+      const bottomIconsY = 34 + ((rowCount - 1) * rowGap) + iconHeight;
 
       return {
         iconWidth,
         iconHeight,
         columnGap,
+        rowGap,
+        rowCount,
+        iconsPerRow,
         panelWidth,
         panelLeft,
         titleX: panelLeft + ((panelWidth - this.lifeTitle.width) * 0.5),
         firstRowY: 34,
-        secondRowY: 34 + rowGap
+        audioTextY: Math.max(82, bottomIconsY + 10)
       };
     }
 
@@ -569,9 +799,9 @@
       this.scoreIcon.setPosition(0, 62);
       this.scoreIcon.setDisplaySize(26, 16);
       this.scoreText.setPosition(34, 50);
-      this.audioText.setPosition(0, 82);
 
       const lifeLayout = this.getLivesLayout(bounds.width);
+      this.audioText.setPosition(0, lifeLayout.audioTextY);
       this.lifeTitle.setPosition(lifeLayout.titleX, 0);
       this.reflowLives(this.lastLivesCount > -1 ? this.lastLivesCount : 0, bounds.width);
     }
@@ -580,22 +810,22 @@
       this.lifeIcons.forEach((icon) => icon.destroy());
       this.lifeIcons = [];
 
+      this.lastLivesCount = Phaser.Math.Clamp(count, 0, MAX_LIVES);
       const lifeLayout = this.getLivesLayout(width);
-      const maxIcons = Math.min(count, MAX_LIVES);
-      const firstRowCount = Math.min(maxIcons, LIFE_ICONS_FIRST_ROW);
-      const secondRowCount = Math.max(0, maxIcons - LIFE_ICONS_FIRST_ROW);
+      const maxIcons = this.lastLivesCount;
 
+      this.audioText.setPosition(0, lifeLayout.audioTextY);
       this.lifeTitle.setPosition(lifeLayout.titleX, 0);
 
       for (let index = 0; index < maxIcons; index += 1) {
-        const isSecondRow = index >= LIFE_ICONS_FIRST_ROW;
-        const rowIndex = isSecondRow ? 1 : 0;
-        const indexInRow = isSecondRow ? index - LIFE_ICONS_FIRST_ROW : index;
-        const rowCount = rowIndex === 0 ? firstRowCount : secondRowCount;
+        const rowIndex = Math.floor(index / lifeLayout.iconsPerRow);
+        const indexInRow = index % lifeLayout.iconsPerRow;
+        const rowStartIndex = rowIndex * lifeLayout.iconsPerRow;
+        const rowCount = Math.min(lifeLayout.iconsPerRow, maxIcons - rowStartIndex);
         const rowWidth = (rowCount * lifeLayout.iconWidth) + (Math.max(0, rowCount - 1) * lifeLayout.columnGap);
         const rowLeft = lifeLayout.panelLeft + ((lifeLayout.panelWidth - rowWidth) * 0.5);
         const x = rowLeft + (lifeLayout.iconWidth * 0.5) + (indexInRow * (lifeLayout.iconWidth + lifeLayout.columnGap));
-        const y = rowIndex === 0 ? lifeLayout.firstRowY : lifeLayout.secondRowY;
+        const y = lifeLayout.firstRowY + (rowIndex * lifeLayout.rowGap);
         const icon = this.scene.add.image(x, y, PLAYER_TEXTURE_KEY).setOrigin(0.5);
         icon.setDisplaySize(lifeLayout.iconWidth, lifeLayout.iconHeight);
         this.lifeIcons.push(icon);
@@ -612,7 +842,6 @@
 
       if (this.lastLivesCount !== data.extraLives) {
         this.reflowLives(data.extraLives, data.width);
-        this.lastLivesCount = data.extraLives;
       }
 
       if (!this.damageFlashActive) {
@@ -715,6 +944,11 @@
         id: this.serial += 1,
         type: "pipe",
         pieces,
+        gapTopY,
+        gapBottomY,
+        gapCenterY: centerY,
+        spawnX,
+        speed: config.obstacleSpeed,
         scored: false
       };
 
@@ -805,6 +1039,8 @@
       });
 
       this.load.image(PLAYER_TEXTURE_KEY, "./gatinha_frame.png");
+      this.load.image(EXTRA_LIFE_TEXTURE_KEY, "./petisco_clean.png");
+      this.load.image(RAT_TEXTURE_KEY, "./rato.png");
       this.load.image("ui-source", "./free.png");
       this.load.image("power-source", "./RetroCatsFree.png");
 
@@ -828,27 +1064,48 @@
         }
 
         this.bootFinished = true;
-        AssetBuilder.ensureRuntimeTextures(this);
+        try {
+          AssetBuilder.ensureRuntimeTextures(this);
+        } catch (error) {
+          console.warn("Falha ao preparar texturas runtime; seguindo com o boot.", error);
+        }
         this.registry.set("failedAssets", Array.from(this.failedAssets));
         this.registry.set("gameVersion", GAME_VERSION);
         this.scene.start("MenuScene");
       };
 
-      if (this.textures.exists(PLAYER_TEXTURE_KEY)) {
+      const requiredImages = [
+        { key: PLAYER_TEXTURE_KEY, src: "./gatinha_frame.png" },
+        { key: EXTRA_LIFE_TEXTURE_KEY, src: "./petisco_clean.png" },
+        { key: RAT_TEXTURE_KEY, src: "./rato.png" }
+      ];
+      const missingImages = requiredImages.filter((image) => !this.textures.exists(image.key));
+
+      if (missingImages.length === 0) {
         finishBoot();
         return;
       }
 
       if (window.location.protocol === "file:") {
-        const fallbackImage = new Image();
-        fallbackImage.onload = () => {
-          AssetBuilder.addImageTexture(this, PLAYER_TEXTURE_KEY, fallbackImage);
-          finishBoot();
+        let pendingFallbacks = missingImages.length;
+        const concludeFallback = () => {
+          pendingFallbacks -= 1;
+          if (pendingFallbacks <= 0) {
+            finishBoot();
+          }
         };
-        fallbackImage.onerror = () => {
-          finishBoot();
-        };
-        fallbackImage.src = new URL("./gatinha_frame.png", window.location.href).href;
+
+        missingImages.forEach((imageConfig) => {
+          const fallbackImage = new Image();
+          fallbackImage.onload = () => {
+            AssetBuilder.addImageTexture(this, imageConfig.key, fallbackImage);
+            concludeFallback();
+          };
+          fallbackImage.onerror = () => {
+            concludeFallback();
+          };
+          fallbackImage.src = new URL(imageConfig.src, window.location.href).href;
+        });
         return;
       }
 
@@ -1074,7 +1331,12 @@
       this.currentMusic = null;
       this.worldTintStamp = -1;
       this.lastGapCenterY = null;
+      this.extraLifeSpawnedThisPhase = false;
+      this.extraLifePendingThisPhase = false;
       this.invincibilityTimer = null;
+      this.nextRatSpawnAt = null;
+      this.ratsSpawnedThisPhase = 0;
+      this.phaseRatTimers = [];
 
       this.physics.world.gravity.y = 430;
       this.physics.world.setBounds(0, 0, this.layout.width, this.layout.height);
@@ -1089,6 +1351,8 @@
 
       this.physics.add.overlap(this.playerBody, this.obstacles, this.onPlayerHit, null, this);
       this.physics.add.overlap(this.playerBody, this.powerUps, this.collectPowerUp, null, this);
+      this.physics.add.overlap(this.playerBody, this.extraLifeTreats, this.collectExtraLifeTreat, null, this);
+      this.physics.add.overlap(this.playerBody, this.rats, this.onRatHit, null, this);
 
       this.scale.on("resize", this.handleResize, this);
       this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -1098,6 +1362,8 @@
         this.input.keyboard.off("keydown-UP", this.flap, this);
         this.clearInvincibilityState();
         this.stopCurrentMusic();
+        this.phaseRatTimers.forEach((timer) => timer.remove(false));
+        this.phaseRatTimers = [];
         if (this.player) {
           this.player.destroy();
           this.player = null;
@@ -1158,6 +1424,16 @@
         allowGravity: false,
         immovable: true
       });
+
+      this.extraLifeTreats = this.physics.add.group({
+        allowGravity: false,
+        immovable: true
+      });
+
+      this.rats = this.physics.add.group({
+        allowGravity: false,
+        immovable: true
+      });
     }
 
     createPlayer() {
@@ -1185,6 +1461,148 @@
       this.input.on("pointerdown", this.flap, this);
       this.input.keyboard.on("keydown-SPACE", this.flap, this);
       this.input.keyboard.on("keydown-UP", this.flap, this);
+    }
+
+    isRatPhaseActive() {
+      return this.currentPhaseConfig
+        && this.currentPhaseConfig.number >= RAT_PHASE_START
+        && this.currentPhaseConfig.number <= RAT_PHASE_END;
+    }
+
+    scheduleNextRatSpawn() {
+      const baseDelay = this.currentPhaseConfig ? this.currentPhaseConfig.spawnDelay : 2600;
+      this.nextRatSpawnAt = this.time.now + Phaser.Math.Between(
+        Math.round(baseDelay * 1.9),
+        Math.round(baseDelay * 2.8)
+      );
+    }
+
+    schedulePhaseRatSpawns() {
+      this.phaseRatTimers.forEach((timer) => timer.remove(false));
+      this.phaseRatTimers = [];
+
+      if (!this.isRatPhaseActive() || !this.currentPhaseConfig) {
+        return;
+      }
+
+      const phaseDurationMs = this.currentPhaseConfig.duration * 1000;
+      const baseMarkers = [0.34, 0.72];
+      const jitterMs = Math.min(1800, Math.round(phaseDurationMs * 0.045));
+      const minDelay = Math.max(3500, Math.round(phaseDurationMs * 0.2));
+      const maxDelay = Math.max(minDelay, Math.round(phaseDurationMs * 0.82));
+
+      baseMarkers.slice(0, MAX_RATS_PER_PHASE).forEach((marker) => {
+        const rawDelay = Math.round((phaseDurationMs * marker) + Phaser.Math.Between(-jitterMs, jitterMs));
+        const delay = Phaser.Math.Clamp(rawDelay, minDelay, maxDelay);
+        const timer = this.time.delayedCall(delay, () => {
+          if (this.phaseTransitionActive || this.gameFinished || this.isPhaseDurationComplete()) {
+            return;
+          }
+
+          this.spawnRat();
+        });
+
+        this.phaseRatTimers.push(timer);
+      });
+    }
+
+    spawnRat() {
+      try {
+        const ratTextureKey = this.textures.exists(RAT_RUNTIME_TEXTURE_KEY)
+          ? RAT_RUNTIME_TEXTURE_KEY
+          : (this.textures.exists(RAT_FALLBACK_TEXTURE_KEY) ? RAT_FALLBACK_TEXTURE_KEY : RAT_TEXTURE_KEY);
+
+        if (
+          !this.rats ||
+          !this.textures.exists(ratTextureKey) ||
+          !this.currentPhaseConfig ||
+          this.ratsSpawnedThisPhase >= MAX_RATS_PER_PHASE
+        ) {
+          return false;
+        }
+
+        const rat = this.rats.create(0, 0, ratTextureKey);
+        if (!rat) {
+          return false;
+        }
+
+          const playerSize = this.player
+            ? Math.max(this.player.displayWidth, this.player.displayHeight)
+            : Phaser.Math.Clamp(this.layout.width * 0.12, 96, 128);
+          const ratHeight = Phaser.Math.Clamp(Math.round(playerSize * 1.18), 108, 148);
+
+          rat.setActive(true);
+          rat.setVisible(true);
+          rat.setDepth(35);
+          rat.setDisplayHeight(ratHeight);
+
+          const minY = Math.max(96, Math.round(this.layout.height * 0.26));
+        const maxY = Math.max(
+          minY,
+          Math.round(this.layout.height - this.layout.floorHeight - Math.max(rat.displayHeight * 0.5, 40))
+        );
+        const spawnY = Phaser.Math.Between(minY, maxY);
+
+        rat.setPosition(this.layout.width + (rat.displayWidth * 0.5) + 24, spawnY);
+
+        rat.body.setAllowGravity(false);
+        rat.body.moves = true;
+        rat.body.setImmovable(true);
+        rat.body.setVelocityX(-Math.round(this.currentPhaseConfig.obstacleSpeed * 1.04));
+        rat.body.setVelocityY(0);
+        rat.body.setSize(rat.displayWidth * 0.56, rat.displayHeight * 0.68, true);
+        this.ratsSpawnedThisPhase += 1;
+        return true;
+      } catch (error) {
+        console.warn("Falha ao criar rato nesta fase.", error);
+        return false;
+      }
+    }
+
+    clearRats() {
+      if (!this.rats) {
+        return;
+      }
+
+      this.rats.children.each((rat) => {
+        if (rat && rat.active) {
+          rat.destroy();
+        }
+      });
+    }
+
+    updateRats() {
+      if (!this.rats) {
+        return;
+      }
+
+      if (
+        !this.isRatPhaseActive() ||
+        this.phaseTransitionActive ||
+        this.gameFinished
+      ) {
+        this.clearRats();
+        return;
+      }
+
+      this.rats.children.each((rat) => {
+        if (!rat.active) {
+          return;
+        }
+
+        if (rat.x < -((rat.displayWidth || rat.width) + 80)) {
+          rat.destroy();
+        }
+      });
+    }
+
+    onRatHit(playerBody, rat) {
+      if (!rat || !rat.active) {
+        return;
+      }
+
+      rat.destroy();
+      this.onPlayerHit();
     }
 
     flap() {
@@ -1270,6 +1688,14 @@
           powerUp.destroy();
         }
       });
+
+      this.extraLifeTreats.children.each((treat) => {
+        if (treat && treat.active) {
+          treat.destroy();
+        }
+      });
+
+      this.clearRats();
     }
 
     startPhase(index) {
@@ -1282,6 +1708,12 @@
       this.powerUpsSpawnedThisPhase = 0;
       this.powerUpsCollectedThisPhase = 0;
       this.lastGapCenterY = null;
+      this.extraLifeSpawnedThisPhase = false;
+      this.extraLifePendingThisPhase = false;
+      this.nextRatSpawnAt = null;
+      this.ratsSpawnedThisPhase = 0;
+      this.phaseRatTimers.forEach((timer) => timer.remove(false));
+      this.phaseRatTimers = [];
 
       if (this.obstacleTimer) {
         this.obstacleTimer.remove(false);
@@ -1314,8 +1746,20 @@
         this.phasePowerUpTimers.push(timer);
       });
 
+      const extraLifeTimer = this.time.delayedCall(
+        Phaser.Math.Between(
+          Math.round(this.currentPhaseConfig.duration * EXTRA_LIFE_SPAWN_MARKER_MIN * 1000),
+          Math.round(this.currentPhaseConfig.duration * EXTRA_LIFE_SPAWN_MARKER_MAX * 1000)
+        ),
+        this.triggerExtraLifeTreatSpawn,
+        [],
+        this
+      );
+      this.phasePowerUpTimers.push(extraLifeTimer);
+
       this.updatePhaseBanner(`Fase ${this.currentPhaseConfig.number}`);
       this.syncMusic();
+      this.schedulePhaseRatSpawns();
       this.refreshWorldColors(true);
       this.phaseTransitionActive = false;
     }
@@ -1361,6 +1805,190 @@
 
       const set = this.obstacleFactory.spawn(this.currentPhaseConfig);
       this.obstacleSets.push(set);
+
+      if (this.extraLifePendingThisPhase && !this.extraLifeSpawnedThisPhase) {
+        this.spawnExtraLifeTreat(set);
+      }
+    }
+
+    getNewestActiveObstacleSet() {
+      return [...this.obstacleSets]
+        .reverse()
+        .find((set) => set.pieces && set.pieces.some((piece) => piece && piece.active));
+    }
+
+    triggerExtraLifeTreatSpawn() {
+      if (this.phaseTransitionActive || this.gameFinished || this.extraLifeSpawnedThisPhase) {
+        return;
+      }
+
+      const activeSet = this.getNewestActiveObstacleSet();
+      if (activeSet) {
+        this.spawnExtraLifeTreat(activeSet);
+        return;
+      }
+
+      this.extraLifePendingThisPhase = true;
+    }
+
+    getTextureAspectRatio(key, fallbackRatio = 1) {
+      if (!this.textures.exists(key)) {
+        return fallbackRatio;
+      }
+
+      const texture = this.textures.get(key);
+      const sourceImage = texture && texture.getSourceImage ? texture.getSourceImage() : null;
+      if (!sourceImage || !sourceImage.width || !sourceImage.height) {
+        return fallbackRatio;
+      }
+
+      return sourceImage.width / sourceImage.height;
+    }
+
+    getExtraLifeTextureKey() {
+      if (this.textures.exists(EXTRA_LIFE_TEXTURE_KEY)) {
+        return EXTRA_LIFE_TEXTURE_KEY;
+      }
+
+      return null;
+    }
+
+    getExtraLifeTreatSize() {
+      const playerWidth = this.player ? this.player.displayWidth : Phaser.Math.Clamp(this.layout.width * 0.1, 74, 110);
+      const playerHeight = this.player ? this.player.displayHeight : Math.round(playerWidth * 0.9);
+      const textureKey = this.getExtraLifeTextureKey();
+      const aspectRatio = this.getTextureAspectRatio(textureKey || EXTRA_LIFE_TEXTURE_KEY, EXTRA_LIFE_TEXTURE_FALLBACK_ASPECT);
+      const maxWidth = Math.max(42, Math.round(playerWidth * 1.25));
+      const maxHeight = Math.max(50, Math.round(playerHeight * 1.25));
+      let height = maxHeight;
+      let width = Math.round(height * aspectRatio);
+
+      if (width > maxWidth) {
+        width = maxWidth;
+        height = Math.round(width / aspectRatio);
+      }
+
+      return {
+        width,
+        height
+      };
+    }
+
+    getReachableTreatSpawnArea(size) {
+      const playerWidth = this.player ? this.player.displayWidth : 90;
+      const playerHeight = this.player ? this.player.displayHeight : 90;
+      const leftPadding = Math.max(170, Math.round(playerWidth * 2.1));
+      const rightPadding = Math.max(90, Math.round(size.width * 0.9));
+      const topPadding = Math.max(110, Math.round(size.height * 0.7));
+      const bottomPadding = Math.max(96, Math.round(playerHeight * 0.9));
+
+      return {
+        minX: Math.round(Math.max(this.player.x + leftPadding, this.layout.width * 0.48)),
+        maxX: Math.round(this.layout.width - rightPadding),
+        minY: Math.round(topPadding),
+        maxY: Math.round(this.layout.height - this.layout.floorHeight - bottomPadding)
+      };
+    }
+
+    isTreatPositionClear(x, y, width, height) {
+      const horizontalPadding = Math.max(18, Math.round(width * 0.2));
+      const verticalPadding = Math.max(18, Math.round(height * 0.2));
+      const treatBounds = new Phaser.Geom.Rectangle(
+        x - (width * 0.5) - horizontalPadding,
+        y - (height * 0.5) - verticalPadding,
+        width + (horizontalPadding * 2),
+        height + (verticalPadding * 2)
+      );
+      let blocked = false;
+
+      this.obstacles.children.each((obstacle) => {
+        if (blocked || !obstacle || !obstacle.active) {
+          return;
+        }
+
+        const obstacleBounds = obstacle.getBounds();
+        if (Phaser.Geom.Intersects.RectangleToRectangle(treatBounds, obstacleBounds)) {
+          blocked = true;
+        }
+      });
+
+      return !blocked;
+    }
+
+    spawnExtraLifeTreat(obstacleSet) {
+      if (
+        this.phaseTransitionActive ||
+        this.gameFinished ||
+        this.extraLifeSpawnedThisPhase ||
+        !obstacleSet ||
+        !this.getExtraLifeTextureKey()
+      ) {
+        return;
+      }
+
+      const activePieces = obstacleSet.pieces
+        .filter((piece) => piece && piece.active);
+      if (activePieces.length === 0) {
+        this.extraLifePendingThisPhase = true;
+        return;
+      }
+
+      const size = this.getExtraLifeTreatSize();
+      const textureKey = this.getExtraLifeTextureKey();
+      const spawnArea = this.getReachableTreatSpawnArea(size);
+      let spawnX = null;
+      let spawnY = null;
+
+      for (let attempt = 0; attempt < 18; attempt += 1) {
+        const candidateX = Phaser.Math.Between(spawnArea.minX, Math.max(spawnArea.minX, spawnArea.maxX));
+        const candidateY = Phaser.Math.Between(spawnArea.minY, Math.max(spawnArea.minY, spawnArea.maxY));
+
+        if (!this.isTreatPositionClear(candidateX, candidateY, size.width, size.height)) {
+          continue;
+        }
+
+        spawnX = candidateX;
+        spawnY = candidateY;
+        break;
+      }
+
+      if (spawnX === null || spawnY === null) {
+        const fallbackX = Phaser.Math.Clamp(
+          Math.round(Math.max(this.player.x + (this.player.displayWidth * 2.2), this.layout.width * 0.62)),
+          spawnArea.minX,
+          Math.max(spawnArea.minX, spawnArea.maxX)
+        );
+        const fallbackY = Phaser.Math.Clamp(
+          obstacleSet.gapCenterY,
+          spawnArea.minY,
+          spawnArea.maxY
+        );
+
+        if (!this.isTreatPositionClear(fallbackX, fallbackY, size.width, size.height)) {
+          this.extraLifePendingThisPhase = true;
+          return;
+        }
+
+        spawnX = fallbackX;
+        spawnY = fallbackY;
+      }
+
+      const treat = this.extraLifeTreats.create(spawnX, spawnY, textureKey);
+      const hitRadius = Math.max(12, Math.round(Math.min(size.width, size.height) * 0.3));
+      const hitOffsetX = Math.round((size.width - (hitRadius * 2)) * 0.5);
+      const hitOffsetY = Math.round((size.height - (hitRadius * 2)) * 0.34);
+
+      treat.setDisplaySize(size.width, size.height);
+      treat.setDepth(39);
+      treat.setAngle(-18);
+      treat.body.setAllowGravity(false);
+      treat.body.moves = true;
+      treat.body.setImmovable(true);
+      treat.body.setVelocityX(-obstacleSet.speed);
+      treat.body.setCircle(hitRadius, hitOffsetX, hitOffsetY);
+
+      this.extraLifeSpawnedThisPhase = true;
+      this.extraLifePendingThisPhase = false;
     }
 
     spawnPowerUp() {
@@ -1424,6 +2052,72 @@
       this.cameras.main.flash(110, 255, 255, 255, false);
       this.cameras.main.shake(120, 0.0025, true);
       this.player.pulseCollect();
+    }
+
+    collectExtraLifeTreat(player, treat) {
+      if (!treat.active) {
+        return;
+      }
+
+      treat.destroy();
+      this.lives += 1;
+      this.extraLives = this.lives;
+      this.playExtraLifeSound();
+
+      this.cameras.main.flash(130, 255, 244, 200, false);
+      this.cameras.main.shake(120, 0.0025, true);
+      this.player.pulseCollect();
+    }
+
+    playExtraLifeSound() {
+      if (this.cache.audio.exists("sfx_collect")) {
+        this.sound.play("sfx_collect", { volume: 0.42, rate: 1.16 });
+      }
+
+      const audioContext = this.sound ? this.sound.context : null;
+      if (!audioContext || typeof audioContext.createOscillator !== "function") {
+        return;
+      }
+
+      safeResumeAudioContext(audioContext);
+      const now = audioContext.currentTime;
+      const masterGain = audioContext.createGain();
+      masterGain.gain.setValueAtTime(0.0001, now);
+      masterGain.gain.exponentialRampToValueAtTime(0.07, now + 0.03);
+      masterGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+      masterGain.connect(audioContext.destination);
+
+      const notes = [
+        { frequency: 660, start: 0, duration: 0.11 },
+        { frequency: 880, start: 0.11, duration: 0.11 },
+        { frequency: 1175, start: 0.22, duration: 0.16 }
+      ];
+
+      notes.forEach((note) => {
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        const noteStart = now + note.start;
+        const noteEnd = noteStart + note.duration;
+
+        oscillator.type = "triangle";
+        oscillator.frequency.setValueAtTime(note.frequency, noteStart);
+        gainNode.gain.setValueAtTime(0.0001, noteStart);
+        gainNode.gain.exponentialRampToValueAtTime(0.65, noteStart + 0.02);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, noteEnd);
+
+        oscillator.connect(gainNode);
+        gainNode.connect(masterGain);
+        oscillator.start(noteStart);
+        oscillator.stop(noteEnd + 0.02);
+        oscillator.onended = () => {
+          oscillator.disconnect();
+          gainNode.disconnect();
+        };
+      });
+
+      this.time.delayedCall(520, () => {
+        masterGain.disconnect();
+      });
     }
 
     activateInvincibility() {
@@ -1495,6 +2189,8 @@
       }
 
       this.phasePowerUpTimers.forEach((timer) => timer.remove(false));
+      this.phaseRatTimers.forEach((timer) => timer.remove(false));
+      this.phaseRatTimers = [];
 
       sharedState.bestScore = Math.max(sharedState.bestScore, this.score);
       window.localStorage.setItem(LOCAL_STORAGE_KEY, String(sharedState.bestScore));
@@ -1530,6 +2226,8 @@
 
       this.phasePowerUpTimers.forEach((timer) => timer.remove(false));
       this.phasePowerUpTimers = [];
+      this.phaseRatTimers.forEach((timer) => timer.remove(false));
+      this.phaseRatTimers = [];
 
       if (this.phaseIndex >= TOTAL_PHASES - 1) {
         this.worldSaturation = 1;
@@ -1686,6 +2384,8 @@
       this.updatePlayerVisuals(time);
       this.updateObstacles();
       this.updatePowerUps(time);
+      this.updateExtraLifeTreats();
+      this.updateRats();
       this.updateHud();
 
       if (this.player.y <= 0) {
@@ -1766,6 +2466,27 @@
 
         if (powerUp.x < -80) {
           powerUp.destroy();
+        }
+      });
+    }
+
+    updateExtraLifeTreats() {
+      this.extraLifeTreats.children.each((treat) => {
+        if (!treat.active) {
+          return;
+        }
+
+        const playerRadius = Math.min(this.player.displayWidth, this.player.displayHeight) * 0.34;
+        const treatRadius = Math.min(treat.displayWidth, treat.displayHeight) * 0.32;
+        const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, treat.x, treat.y);
+
+        if (distance <= (playerRadius + treatRadius)) {
+          this.collectExtraLifeTreat(this.playerBody, treat);
+          return;
+        }
+
+        if (treat.x < -80) {
+          treat.destroy();
         }
       });
     }
